@@ -249,12 +249,18 @@ class _PopularPageState extends State<PopularPage> {
         onPressed: () => context.pushNamed('/settings/history/'),
         icon: const Icon(Icons.history),
       ),
-      if (isDesktop() && !DesktopWindowConfig.showWindowButton)
+      if (isDesktop() && !DesktopWindowConfig.showWindowButton) ...[
+        IconButton(
+          tooltip: '最小化',
+          onPressed: () => windowManager.minimize(),
+          icon: const Icon(Icons.remove),
+        ),
         IconButton(
           tooltip: '退出',
           onPressed: () => windowManager.close(),
           icon: const Icon(Icons.close),
         ),
+      ],
     ];
   }
 

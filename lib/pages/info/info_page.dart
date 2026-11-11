@@ -376,8 +376,14 @@ class _InfoPageState extends State<InfoPage>
                       bangumiItem: infoController.bangumiItem,
                     ),
                   ),
-                  if (isDesktop() && !showWindowButton)
+                  if (isDesktop() && !showWindowButton) ...[
+                    IconButton(
+                      tooltip: '最小化',
+                      onPressed: () => windowManager.minimize(),
+                      icon: const Icon(Icons.remove),
+                    ),
                     CloseButton(onPressed: () => windowManager.close()),
+                  ],
                   SizedBox(width: 8),
                 ],
                 toolbarHeight: kToolbarHeight + topOffset,

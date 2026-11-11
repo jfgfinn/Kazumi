@@ -31,6 +31,11 @@ class SysAppBar extends StatelessWidget implements PreferredSizeWidget {
     final appBarActions = <Widget>[...?actions];
     if (desktop) {
       if (!DesktopWindowConfig.showWindowButton) {
+        appBarActions.add(IconButton(
+          tooltip: '最小化',
+          onPressed: () => windowManager.minimize(),
+          icon: const Icon(Icons.remove),
+        ));
         appBarActions.add(CloseButton(onPressed: () => windowManager.close()));
       }
       appBarActions.add(const SizedBox(width: 8));
