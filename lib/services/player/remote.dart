@@ -104,29 +104,82 @@ class RemotePlay {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 8);
     try {
-      await _soapPost(
-          client, uri, 'SetAVTransportURI', _setUriBody(video, title));
-      await _soapPost(client, uri, 'Play', _playBody);
+      await _soapPost(client, uri, 'SetAVTransportURI',
+          body: _setUriBody(video, title));
+      await _soapPost(client, uri, 'Play', body: _playBody);
+      final confirmed = await _confirmPlaying(client, uri, video);
+      KazumiDialog.showToast(
+        message: confirmed ? '投屏成功，电视正在播放' : '投屏指令已发送，请查看电视画面',
+      );
     } finally {
       client.close(force: true);
     }
   }
 
-  Future<void> _soapPost(
-      HttpClient client, Uri uri, String action, String body) async {
+  /// 这类机顶盒执行完指令后会直接断开连接、不回完整响应头，
+  /// 响应读取阶段的 HttpException 不能当作投屏失败。
+  Future<String> _soapPost(
+      HttpClient client, Uri uri, String action,
+      {required String body}) async {
     final request = await client.postUrl(uri);
     request.headers.set('SOAPAction', '"$_avTransportType#$action"');
     request.headers.set('Content-Type', 'text/xml');
+    request.headers.set('Connection', 'close');
     final payload = utf8.encode(body);
     request.contentLength = payload.length;
     request.add(payload);
-    final response =
-        await request.close().timeout(const Duration(seconds: 15));
-    final text = await response.transform(utf8.decoder).join();
-    if (response.statusCode != HttpStatus.ok) {
-      throw Exception('$action 返回 HTTP ${response.statusCode}: $text');
+    try {
+      final response =
+          await request.close().timeout(const Duration(seconds: 15));
+      final text = await response.transform(utf8.decoder).join();
+      if (response.statusCode != HttpStatus.ok) {
+        KazumiLogger()
+            .i('RemotePlay: $action HTTP ${response.statusCode} $text');
+      }
+      return text;
+    } on SocketException {
+      rethrow; // 连不上才是真失败
+    } on HttpException catch (e) {
+      KazumiLogger().i('RemotePlay: $action 响应丢失（设备多半已执行）$e');
+      return '';
     }
   }
+
+  /// 以设备自己回报的 TrackURI 为准判断是否真的投上去了。
+  Future<bool> _confirmPlaying(
+      HttpClient client, Uri uri, String video) async {
+    final probe = video.split('&').first;
+    if (probe.isEmpty) {
+      return false;
+    }
+    for (var attempt = 0; attempt < 3; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      String text;
+      try {
+        text = await _soapPost(client, uri, 'GetPositionInfo',
+            body: '<InstanceID>0</InstanceID>');
+      } catch (e) {
+        continue;
+      }
+      final match =
+          RegExp('<TrackURI>(.*?)</TrackURI>', dotAll: true).firstMatch(text);
+      if (match == null) {
+        continue;
+      }
+      final track = _unescapeXml(match.group(1)!.trim());
+      if (track.contains(probe)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String _unescapeXml(String value) => value
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&amp;', '&');
 
   String _setUriBody(String video, String title) {
     final didl = '<DIDL-Lite '
