@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:dlna_dart/dlna.dart';
 import 'package:flutter/material.dart';
@@ -59,8 +61,7 @@ class RemotePlay {
                               KazumiDialog.showToast(
                                 message: '尝试投屏至 ${value.info.friendlyName}',
                               );
-                              await value.setUrl(video, title: title);
-                              await value.play();
+                              await _castToDevice(value, video, title);
                             } catch (e) {
                               KazumiLogger().e(
                                   'RemotePlay: failed to cast to device',
@@ -90,6 +91,79 @@ class RemotePlay {
       searcher.stop();
     });
   }
+
+  static const String _avTransportType =
+      'urn:schemas-upnp-org:service:AVTransport:1';
+
+  /// 部分运营商定制机顶盒无法解析内联的 DIDL-Lite，收到 SetAVTransportURI
+  /// 会直接断开连接。这里自行发送 SOAP 请求，DIDL 整体转义后再放入
+  /// CurrentURIMetaData，这是与 dlna_dart 默认行为唯一的区别。
+  Future<void> _castToDevice(
+      DLNADevice device, String video, String title) async {
+    final uri = Uri.parse(device.controlURL('AVTransport'));
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8);
+    try {
+      await _soapPost(
+          client, uri, 'SetAVTransportURI', _setUriBody(video, title));
+      await _soapPost(client, uri, 'Play', _playBody);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _soapPost(
+      HttpClient client, Uri uri, String action, String body) async {
+    final request = await client.postUrl(uri);
+    request.headers.set('SOAPAction', '"$_avTransportType#$action"');
+    request.headers.set('Content-Type', 'text/xml');
+    final payload = utf8.encode(body);
+    request.contentLength = payload.length;
+    request.add(payload);
+    final response =
+        await request.close().timeout(const Duration(seconds: 15));
+    final text = await response.transform(utf8.decoder).join();
+    if (response.statusCode != HttpStatus.ok) {
+      throw Exception('$action 返回 HTTP ${response.statusCode}: $text');
+    }
+  }
+
+  String _setUriBody(String video, String title) {
+    final didl = '<DIDL-Lite '
+        'xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '
+        'xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
+        '<item id="id" parentID="0" restricted="0">'
+        '<dc:title>${_escapeXml(title)}</dc:title>'
+        '<upnp:artist>unknow</upnp:artist>'
+        '<upnp:class>object.item.videoItem</upnp:class>'
+        '<res protocolInfo="http-get:*:*:*">${_escapeXml(video)}</res>'
+        '</item></DIDL-Lite>';
+    return '<?xml version="1.0" encoding="utf-8" standalone="yes"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+        '<s:Body><u:SetAVTransportURI xmlns:u="$_avTransportType">'
+        '<InstanceID>0</InstanceID>'
+        '<CurrentURI>${_escapeXml(video)}</CurrentURI>'
+        '<CurrentURIMetaData>${_escapeXml(didl)}</CurrentURIMetaData>'
+        '</u:SetAVTransportURI></s:Body></s:Envelope>';
+  }
+
+  String get _playBody =>
+      '<?xml version="1.0" encoding="utf-8" standalone="yes"?>'
+      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+      's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+      '<s:Body><u:Play xmlns:u="$_avTransportType">'
+      '<InstanceID>0</InstanceID><Speed>1</Speed>'
+      '</u:Play></s:Body></s:Envelope>';
+
+  String _escapeXml(String value) => value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
 
   // DLNADevice.controlURL resolves every cast request through this service.
   bool _supportsAVTransport(DLNADevice device) {
